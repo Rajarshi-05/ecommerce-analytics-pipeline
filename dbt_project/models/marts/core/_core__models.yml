@@ -1,0 +1,187 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: >
+      Conformed date dimension covering the observed order history plus a year
+      of headroom for forecasts. Generated from the data, not hard-coded.
+    columns:
+      - name: date_key
+        description: Integer surrogate key in YYYYMMDD form.
+        data_tests: [not_null, unique]
+      - name: date_day
+        data_tests: [not_null, unique]
+      - name: year_month
+        data_tests: [not_null]
+
+  - name: dim_customers
+    description: >
+      Customer dimension at person grain (customer_unique_id), not at the
+      source's per-order customer_id. This is what makes repeat-purchase,
+      cohort and RFM analysis possible.
+    columns:
+      - name: customer_key
+        description: Primary key - the source's customer_unique_id.
+        data_tests: [not_null, unique]
+      - name: geography_key
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_geography')
+              field: geography_key
+      - name: lifetime_order_count
+        data_tests: [not_null, not_negative]
+      - name: acquisition_cohort_month
+        data_tests: [not_null]
+      - name: customer_state
+        data_tests: [not_null]
+    data_tests:
+      - expression_is_true:
+          expression: latest_order_at >= first_order_at
+          name: dim_customers_tenure_non_negative
+      - expression_is_true:
+          expression: is_repeat_customer = (lifetime_order_count > 1)
+          name: dim_customers_repeat_flag_consistent
+
+  - name: dim_products
+    description: Product dimension with English category and shipping-weight classification.
+    columns:
+      - name: product_key
+        data_tests: [not_null, unique]
+      - name: product_category
+        data_tests: [not_null]
+      - name: weight_class
+        data_tests:
+          - accepted_values:
+              values: [light, medium, heavy, oversized, unknown]
+
+  - name: dim_sellers
+    description: Seller dimension enriched with region and coordinates.
+    columns:
+      - name: seller_key
+        data_tests: [not_null, unique]
+      - name: seller_state
+        data_tests: [not_null]
+
+  - name: dim_geography
+    description: >
+      Conformed geography at zip-prefix grain, shared by customers and sellers.
+      Includes prefixes that appear on a customer or seller but are missing from
+      the geolocation source, so no fact row loses its geography join.
+    columns:
+      - name: geography_key
+        data_tests: [not_null, unique]
+      - name: state
+        data_tests: [not_null]
+      - name: region
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: [North, Northeast, Central-West, Southeast, South, Unknown]
+
+  - name: fact_orders
+    description: >
+      Order-grain fact. One row per order, with financial, payment, review and
+      delivery measures. Joins to items and payments go through pre-aggregated
+      intermediate models so order_total stays additive.
+    columns:
+      - name: order_id
+        description: Degenerate dimension and primary key.
+        data_tests: [not_null, unique]
+      - name: customer_key
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_customers')
+              field: customer_key
+      - name: geography_key
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_geography')
+              field: geography_key
+      - name: order_date_key
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: order_total
+        data_tests: [not_null, not_negative]
+      - name: gross_merchandise_value
+        data_tests: [not_null, not_negative]
+      - name: freight_total
+        data_tests: [not_null, not_negative]
+      - name: review_score
+        data_tests:
+          - accepted_values:
+              values: [1, 2, 3, 4, 5]
+              quote: false
+      - name: delivery_speed_bucket
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['0-3 days', '4-7 days', '8-14 days', '15-30 days',
+                       '30+ days', 'not_delivered']
+    data_tests:
+      # The core fan-out guard: one fact row per source order, and the sum of
+      # order revenue must equal the sum of item revenue.
+      - equal_rowcount:
+          compare_model: ref('stg_orders')
+      - sums_match:
+          column_name: gross_merchandise_value
+          compare_model: ref('stg_order_items')
+          compare_column: item_price
+          tolerance: 0.05
+      - expression_is_true:
+          expression: order_total = gross_merchandise_value + freight_total
+          name: fact_orders_total_is_gmv_plus_freight
+      - expression_is_true:
+          expression: delivery_days >= 0
+          where: delivery_days is not null
+          name: fact_orders_delivery_days_non_negative
+      - expression_is_true:
+          expression: is_late_delivery is not null
+          where: is_delivered
+          name: fact_orders_delivered_rows_have_lateness_flag
+
+  - name: fact_order_items
+    description: >
+      Item-grain fact. Use this for anything sliced by product or seller;
+      use fact_orders for order counts and per-order averages.
+    columns:
+      - name: order_item_key
+        data_tests: [not_null, unique]
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('fact_orders')
+              field: order_id
+      - name: product_key
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_products')
+              field: product_key
+      - name: seller_key
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_sellers')
+              field: seller_key
+      - name: order_date_key
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: item_price
+        data_tests: [not_null, not_negative]
+      - name: freight_value
+        data_tests: [not_null, not_negative]
+    data_tests:
+      - equal_rowcount:
+          compare_model: ref('stg_order_items')
+      - unique_combination_of_columns:
+          combination_of_columns: [order_id, order_item_id]

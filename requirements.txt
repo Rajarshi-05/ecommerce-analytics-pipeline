@@ -1,0 +1,8 @@
+# Streamlit Community Cloud installs from this file at the repo root.
+# The deployed app reads the Parquet snapshot in dashboard/data/, so it needs
+# no database driver, no dbt and no ML libraries.
+streamlit==1.41.1
+plotly==5.24.1
+pandas==2.2.3
+numpy==1.26.4
+pyarrow==18.1.0

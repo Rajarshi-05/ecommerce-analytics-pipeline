@@ -1,0 +1,16 @@
+# Isolated venv: ingestion + ML. Separate from dbt because Prophet/scikit-learn
+# and dbt-core disagree on transitive pins often enough to be worth the split.
+pandas==2.2.3
+numpy==1.26.4
+pyarrow==18.1.0
+SQLAlchemy==2.0.36
+psycopg2-binary==2.9.10
+kaggle==1.6.17
+scikit-learn==1.5.2
+prophet==1.1.6
+# Prophet 1.1.6 ships a pre-compiled Stan binary alongside a stub cmdstan
+# directory with no makefile. cmdstanpy 1.3.0 added a makefile check to
+# validate_cmdstan_path, so it rejects that stub and Prophet fails at import
+# with a misleading "no attribute 'stan_backend'". Pin below 1.3.0.
+cmdstanpy==1.2.4
+python-dotenv==1.0.1

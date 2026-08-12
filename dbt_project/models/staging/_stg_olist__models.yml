@@ -1,0 +1,152 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: Cleaned customer records, one row per order-time customer_id.
+    columns:
+      - name: customer_id
+        description: Primary key.
+        data_tests: [not_null, unique]
+      - name: customer_unique_id
+        description: Person-level identifier; several customer_ids can map to one.
+        data_tests: [not_null]
+      - name: customer_zip_code_prefix
+        description: Five-character CEP prefix, zero-padded.
+        data_tests: [not_null]
+      - name: customer_state
+        description: Two-letter Brazilian state code.
+        data_tests: [not_null]
+
+  - name: stg_orders
+    description: Cleaned order headers. One row per order.
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: customer_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      - name: order_status
+        data_tests:
+          - not_null
+          - accepted_values:
+              values:
+                [delivered, shipped, canceled, unavailable, invoiced,
+                 processing, created, approved]
+      - name: order_purchase_timestamp
+        data_tests: [not_null]
+    data_tests:
+      - expression_is_true:
+          expression: >
+            order_delivered_customer_date is null
+            or order_delivered_customer_date >= order_purchase_timestamp
+          name: stg_orders_delivery_after_purchase
+
+  - name: stg_order_items
+    description: Order line items. One row per item within an order.
+    columns:
+      - name: order_item_key
+        description: Surrogate key, md5(order_id || order_item_id).
+        data_tests: [not_null, unique]
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_orders')
+              field: order_id
+      - name: product_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_products')
+              field: product_id
+      - name: seller_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_sellers')
+              field: seller_id
+      - name: item_price
+        data_tests: [not_null, not_negative]
+      - name: freight_value
+        data_tests: [not_null, not_negative]
+
+  - name: stg_order_payments
+    description: Payment records. An order may be split across multiple methods.
+    columns:
+      - name: order_payment_key
+        data_tests: [not_null, unique]
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_orders')
+              field: order_id
+      - name: payment_value
+        data_tests: [not_null, not_negative]
+      - name: payment_installments
+        data_tests: [not_null, not_negative]
+
+  - name: stg_order_reviews
+    description: >
+      One review per order. De-duplicated from a source that has both repeated
+      review_ids and orders with multiple reviews; the latest answered review wins.
+    columns:
+      - name: order_id
+        description: Primary key after de-duplication.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              to: ref('stg_orders')
+              field: order_id
+      - name: review_score
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5]
+              quote: false
+      - name: review_sentiment_label
+        data_tests:
+          - accepted_values:
+              values: [positive, neutral, negative]
+
+  - name: stg_products
+    description: Product catalogue with the category translated to English.
+    columns:
+      - name: product_id
+        data_tests: [not_null, unique]
+      - name: product_category
+        description: English category; 'unknown' where the source category is null.
+        data_tests: [not_null]
+
+  - name: stg_sellers
+    description: Marketplace sellers.
+    columns:
+      - name: seller_id
+        data_tests: [not_null, unique]
+      - name: seller_state
+        data_tests: [not_null]
+
+  - name: stg_product_category_translation
+    description: Portuguese to English category lookup.
+    columns:
+      - name: product_category_name
+        data_tests: [not_null, unique]
+      - name: product_category_name_english
+        data_tests: [not_null]
+
+  - name: stg_geolocation
+    description: >
+      One centroid per zip prefix, averaged from the source's ~1M coordinate
+      rows after dropping points outside Brazil's bounding box. Collapsing to
+      one row per prefix is what keeps geo joins from fanning out the facts.
+    columns:
+      - name: zip_code_prefix
+        data_tests: [not_null, unique]
+      - name: latitude
+        data_tests: [not_null]
+      - name: longitude
+        data_tests: [not_null]

@@ -1,0 +1,4 @@
+# Installed into the pipeline venv in its own layer, after the heavy scientific
+# stack, so bumping a test dependency does not trigger a Prophet rebuild.
+pytest==8.3.4
+pytest-cov==6.0.0

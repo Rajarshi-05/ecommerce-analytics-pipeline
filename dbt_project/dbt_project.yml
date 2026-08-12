@@ -1,0 +1,50 @@
+name: ecommerce_analytics
+version: "1.0.0"
+config-version: 2
+
+profile: ecommerce_analytics
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+analysis-paths: ["analyses"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Surfaces in every generated relation's docs and in query comments, which makes
+# warehouse query logs traceable back to a model.
+models:
+  ecommerce_analytics:
+    +persist_docs:
+      relation: true
+      columns: true
+
+    staging:
+      +materialized: view
+      +schema: staging
+
+    intermediate:
+      # Ephemeral: these exist only to keep the mart SQL readable. They are
+      # inlined as CTEs rather than adding relations nobody queries directly.
+      +materialized: ephemeral
+      +schema: staging
+
+    marts:
+      core:
+        +materialized: table
+        +schema: marts
+      analytics:
+        +materialized: view
+        +schema: analytics
+
+# Fail the build on anything that breaks a downstream join; warn on data-quality
+# observations that are true of the source and would only create noise.
+tests:
+  ecommerce_analytics:
+    +severity: error
+    +store_failures: true
+    +schema: dbt_test_failures

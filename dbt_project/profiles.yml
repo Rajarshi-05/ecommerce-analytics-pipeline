@@ -1,0 +1,16 @@
+# Checked in on purpose: every value is an env var with a local-dev default, so
+# there are no credentials here and a fresh clone works with `docker compose up`.
+ecommerce_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST', 'postgres') }}"
+      port: "{{ env_var('POSTGRES_PORT', '5432') | int }}"
+      user: "{{ env_var('POSTGRES_USER', 'analytics') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD', 'analytics') }}"
+      dbname: "{{ env_var('POSTGRES_DB', 'ecommerce') }}"
+      schema: public
+      threads: 4
+      keepalives_idle: 0
+      connect_timeout: 15

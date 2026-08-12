@@ -1,0 +1,18 @@
+# Local development and CI. The Docker images pin their own runtime deps in
+# docker/*/requirements*.txt; this file is for running tests on the host.
+-r docker/app/requirements.txt
+
+pandas==2.2.3
+numpy==1.26.4
+scikit-learn==1.5.2
+prophet==1.1.6
+cmdstanpy==1.2.4
+kaggle==1.6.17
+
+dbt-core==1.9.2
+dbt-postgres==1.9.0
+
+pytest==8.3.4
+pytest-cov==6.0.0
+ruff==0.8.6
+httpx==0.28.1

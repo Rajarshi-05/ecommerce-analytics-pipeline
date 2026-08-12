@@ -1,0 +1,187 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install ruff==0.8.6
+      - name: ruff check
+        run: ruff check .
+      - name: ruff format --check
+        run: ruff format --check .
+        continue-on-error: true
+
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      # Prophet and dbt are not needed for the unit suite; installing only what
+      # it uses keeps this job under a minute.
+      - name: Install test dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas==2.2.3 numpy==1.26.4 pyarrow==18.1.0 \
+                      scikit-learn==1.5.2 SQLAlchemy==2.0.36 \
+                      python-dotenv==1.0.1 pytest==8.3.4 pytest-cov==6.0.0
+      - name: Run unit tests
+        run: pytest -m "not integration" --cov --cov-report=term-missing
+
+  pipeline:
+    name: Pipeline (dbt build + integration tests)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: analytics
+          POSTGRES_PASSWORD: analytics
+          POSTGRES_DB: ecommerce
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U analytics -d ecommerce"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: analytics
+      POSTGRES_DB: ecommerce
+      DATABASE_URL: postgresql+psycopg2://analytics:analytics@localhost:5432/ecommerce
+      DBT_PROFILES_DIR: ${{ github.workspace }}/dbt_project
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas==2.2.3 numpy==1.26.4 pyarrow==18.1.0 \
+                      SQLAlchemy==2.0.36 psycopg2-binary==2.9.10 \
+                      scikit-learn==1.5.2 prophet==1.1.6 cmdstanpy==1.2.4 \
+                      python-dotenv==1.0.1 pytest==8.3.4 \
+                      dbt-core==1.9.2 dbt-postgres==1.9.0
+
+      - name: Create warehouse schemas
+        run: |
+          PGPASSWORD=analytics psql -h localhost -U analytics -d ecommerce \
+            -f docker/postgres/init/01_bootstrap.sql -v ON_ERROR_STOP=0
+
+      # No Kaggle credentials in CI, so the pipeline runs against the synthetic
+      # generator. It reproduces the properties the models depend on - see
+      # ingestion/synthetic.py and tests/test_synthetic.py.
+      - name: Generate source data
+        run: python -m ingestion.cli seed --synthetic --orders 8000
+
+      - name: Load raw zone
+        run: python -m ingestion.cli load --reset
+
+      - name: Validate raw zone
+        run: python -m ingestion.cli validate
+
+      - name: dbt build
+        working-directory: dbt_project
+        run: dbt build --profiles-dir . --no-use-colors
+
+      - name: dbt docs generate
+        working-directory: dbt_project
+        run: dbt docs generate --profiles-dir . --no-use-colors
+
+      - name: Train models
+        run: |
+          python -m ml.segmentation
+          python -m ml.forecasting --horizon-days 60
+          python -m ml.sentiment
+
+      - name: Export dashboard snapshot
+        run: python -m scripts.export_snapshot --strict
+
+      - name: Integration tests
+        run: pytest -m integration -v
+
+      - name: Verify the pipeline is idempotent
+        # A second full run must not change any row count. This is the property
+        # that makes the Airflow DAG safe to retry.
+        run: |
+          BEFORE=$(PGPASSWORD=analytics psql -h localhost -U analytics -d ecommerce -tAc \
+            "select count(*) from marts.fact_orders")
+          python -m ingestion.cli load
+          cd dbt_project && dbt build --profiles-dir . --no-use-colors && cd ..
+          AFTER=$(PGPASSWORD=analytics psql -h localhost -U analytics -d ecommerce -tAc \
+            "select count(*) from marts.fact_orders")
+          echo "fact_orders before=$BEFORE after=$AFTER"
+          test "$BEFORE" = "$AFTER"
+
+      - name: Upload dbt docs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbt-docs
+          path: |
+            dbt_project/target/index.html
+            dbt_project/target/manifest.json
+            dbt_project/target/catalog.json
+          retention-days: 14
+
+  dag-validation:
+    name: Airflow DAG parses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install Airflow
+        run: |
+          pip install --upgrade pip
+          pip install "apache-airflow==2.10.5" \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.5/constraints-3.11.txt"
+      - name: Import the DAG
+        env:
+          AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+        run: |
+          python - <<'PY'
+          from airflow.models import DagBag
+
+          bag = DagBag(dag_folder="dags", include_examples=False)
+          if bag.import_errors:
+              for path, error in bag.import_errors.items():
+                  print(f"::error file={path}::{error}")
+              raise SystemExit(1)
+
+          dag = bag.get_dag("ecommerce_analytics_pipeline")
+          assert dag is not None, "ecommerce_analytics_pipeline not found"
+          print(f"OK: {len(dag.tasks)} tasks")
+          for task in dag.tasks:
+              print(f"  - {task.task_id}")
+          PY

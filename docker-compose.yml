@@ -1,0 +1,190 @@
+name: ecommerce-analytics
+
+x-airflow-common: &airflow-common
+  build:
+    context: ./docker/airflow
+  env_file: .env
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    # Kept low on purpose. LocalExecutor forks each task into the scheduler's
+    # own container, so parallelism is really "how many Python processes may
+    # hold a dataset at once". On a small host a high number here is how you
+    # get the OOM killer instead of throughput.
+    AIRFLOW__CORE__PARALLELISM: "${AIRFLOW_PARALLELISM:-4}"
+    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "15"
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    AIRFLOW__WEBSERVER__WARN_DEPLOYMENT_EXPOSURE: "false"
+    AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
+    PYTHONPATH: /opt/airflow/project
+    PROJECT_ROOT: /opt/airflow/project
+    DBT_PROJECT_DIR: /opt/airflow/project/dbt_project
+    DBT_PROFILES_DIR: /opt/airflow/project/dbt_project
+  volumes:
+    - ./dags:/opt/airflow/dags:ro
+    - ./ingestion:/opt/airflow/project/ingestion
+    - ./ml:/opt/airflow/project/ml
+    - ./scripts:/opt/airflow/project/scripts
+    - ./dbt_project:/opt/airflow/project/dbt_project
+    - ./data:/opt/airflow/project/data
+    # Mounted whole (not just data/) because scripts/export_snapshot.py and the
+    # dashboard share the dataset registry in dashboard/lib/queries.py.
+    - ./dashboard:/opt/airflow/project/dashboard
+    # So `make test` / `make test-integration` can run inside the image that
+    # actually holds the pipeline's dependencies.
+    - ./tests:/opt/airflow/project/tests:ro
+    - ./pyproject.toml:/opt/airflow/project/pyproject.toml:ro
+    - airflow-logs:/opt/airflow/logs
+  user: "${AIRFLOW_UID:-50000}:0"
+  mem_limit: ${AIRFLOW_MEM_LIMIT:-2g}
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  # --------------------------------------------------------------- warehouse --
+  postgres:
+    image: postgres:16-alpine
+    container_name: eap-postgres
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # ------------------------------------------------------------ orchestration --
+  airflow-init:
+    <<: *airflow-common
+    container_name: eap-airflow-init
+    environment:
+      <<: *airflow-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username "${AIRFLOW_ADMIN_USER:-admin}" \
+          --password "${AIRFLOW_ADMIN_PASSWORD:-admin}" \
+          --firstname Analytics --lastname Admin \
+          --role Admin --email admin@example.com || true
+        airflow connections add warehouse_postgres \
+          --conn-type postgres \
+          --conn-host postgres --conn-port 5432 \
+          --conn-schema "${POSTGRES_DB}" \
+          --conn-login "${POSTGRES_USER}" \
+          --conn-password "${POSTGRES_PASSWORD}" || true
+        # The ML tasks each hold a full corpus in memory while fitting. One
+        # slot keeps them serialised so they cannot OOM the scheduler; raise
+        # ML_POOL_SLOTS on a larger host to run them concurrently.
+        airflow pools set ml_pool "${ML_POOL_SLOTS:-1}" \
+          "Memory-bound model training tasks"
+    restart: "no"
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: eap-airflow-scheduler
+    command: scheduler
+    healthcheck:
+      # `airflow jobs check` boots the whole Airflow CLI, which takes ~20s of
+      # Python imports before it even queries. Under load (a dbt run in the same
+      # container) it reliably blew a 20s timeout and reported unhealthy while
+      # the scheduler was working perfectly. The generous timeout is measuring
+      # the right thing; a tighter one just measures interpreter start-up.
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 60s
+      timeout: 60s
+      retries: 5
+      start_period: 120s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: eap-airflow-webserver
+    command: webserver
+    ports:
+      - "${AIRFLOW_WEB_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ------------------------------------------------------------- presentation --
+  dashboard:
+    build:
+      context: ./docker/app
+    container_name: eap-dashboard
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      PYTHONPATH: /app
+    command: >-
+      streamlit run /app/dashboard/Overview.py
+      --server.port=8501
+      --server.address=0.0.0.0
+      --server.headless=true
+      --browser.gatherUsageStats=false
+    mem_limit: ${APP_MEM_LIMIT:-768m}
+    ports:
+      - "${DASHBOARD_PORT:-8501}:8501"
+    volumes:
+      - ./dashboard:/app/dashboard
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./docker/app
+    container_name: eap-api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      PYTHONPATH: /app
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    mem_limit: ${APP_MEM_LIMIT:-768m}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./api:/app/api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  airflow-logs:

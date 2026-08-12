@@ -1,0 +1,12 @@
+# Shared image for the Streamlit dashboard and the FastAPI service.
+streamlit==1.41.1
+plotly==5.24.1
+pandas==2.2.3
+numpy==1.26.4
+pyarrow==18.1.0
+SQLAlchemy==2.0.36
+psycopg2-binary==2.9.10
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+python-dotenv==1.0.1

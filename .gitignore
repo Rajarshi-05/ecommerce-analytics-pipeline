@@ -1,0 +1,59 @@
+# --- Secrets & local config ---
+.env
+kaggle.json
+.kaggle/
+*.pem
+*.key
+
+# --- Data ---
+data/raw/*
+!data/raw/.gitkeep
+data/interim/
+data/processed/
+*.csv
+*.zip
+
+# NOTE: dashboard/data/*.parquet is deliberately NOT ignored. It is the
+# deploy artifact - Streamlit Community Cloud reads it straight from the repo,
+# because it has no route to a local warehouse. ~260 KB of pre-aggregated,
+# non-personal rows; regenerate with `make snapshot`.
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- dbt ---
+dbt_project/target/
+dbt_project/dbt_packages/
+dbt_project/logs/
+.user.yml
+
+# --- Airflow ---
+logs/
+airflow.db
+airflow.cfg
+standalone_admin_password.txt
+
+# --- ML artifacts ---
+ml/artifacts/*
+!ml/artifacts/.gitkeep
+
+# --- OS / editors ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

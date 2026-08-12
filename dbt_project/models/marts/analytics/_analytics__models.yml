@@ -1,0 +1,149 @@
+version: 2
+
+models:
+  - name: agg_kpi_summary
+    description: Single row of headline KPIs. One definition of "total revenue" for the whole project.
+    columns:
+      - name: total_orders
+        data_tests: [not_null, not_negative]
+      - name: total_revenue
+        data_tests: [not_null, not_negative]
+      - name: repeat_customer_pct
+        data_tests: [not_null]
+    data_tests:
+      - expression_is_true:
+          expression: total_orders > 0 and total_customers > 0
+          name: agg_kpi_summary_has_data
+      - expression_is_true:
+          expression: on_time_delivery_pct + late_delivery_pct between 99.9 and 100.1
+          name: agg_kpi_summary_delivery_rates_sum_to_100
+
+  - name: agg_revenue_monthly
+    description: >
+      Monthly revenue, order counts and derived growth rates (MoM, YoY, 3-month
+      moving average). Reported on purchase date so it lines up with the forecast.
+    columns:
+      - name: month_start_date
+        data_tests: [not_null, unique]
+      - name: year_month
+        data_tests: [not_null, unique]
+      - name: revenue
+        data_tests: [not_null, not_negative]
+      - name: order_count
+        data_tests: [not_null, not_negative]
+    data_tests:
+      - expression_is_true:
+          expression: revenue >= gmv
+          name: agg_revenue_monthly_revenue_includes_freight
+
+  - name: agg_category_performance
+    description: >
+      Category league table. Built on item grain, so `order_count` is DISTINCT
+      orders touching the category and will not sum to total orders across rows.
+    columns:
+      - name: product_category
+        data_tests: [not_null, unique]
+      - name: revenue
+        data_tests: [not_null, not_negative]
+      - name: revenue_rank
+        data_tests: [not_null]
+
+  - name: agg_seller_performance
+    description: >
+      Seller league table combining commercial scale with delivery quality, so a
+      high-revenue seller with a bad late rate is visible rather than hidden.
+    columns:
+      - name: seller_key
+        data_tests: [not_null, unique]
+      - name: revenue
+        data_tests: [not_null, not_negative]
+      - name: late_delivery_pct
+        data_tests: [not_negative]
+
+  - name: agg_delivery_performance
+    description: Monthly delivery-speed distribution with the satisfaction attached to each bucket.
+    columns:
+      - name: order_count
+        data_tests: [not_null, not_negative]
+      - name: delivery_speed_bucket
+        data_tests: [not_null]
+    data_tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [month_start_date, delivery_speed_bucket, is_late_delivery]
+
+  - name: agg_delivery_review_correlation
+    description: >
+      The headline insight table - review score and 1-star rate by how late the
+      order was, plus the Pearson correlation between days-late and score.
+    columns:
+      - name: lateness_bucket
+        data_tests: [not_null, unique]
+      - name: avg_review_score
+        data_tests: [not_null]
+      - name: order_count
+        data_tests: [not_null, not_negative]
+
+  - name: agg_customer_rfm
+    description: >
+      Rules-based RFM segmentation scored against the dataset's last purchase
+      date. The baseline that the KMeans clustering is evaluated against.
+    columns:
+      - name: customer_key
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              to: ref('dim_customers')
+              field: customer_key
+      - name: recency_days
+        data_tests: [not_null, not_negative]
+      - name: frequency
+        data_tests: [not_null, not_negative]
+      - name: monetary
+        data_tests: [not_null, not_negative]
+      - name: rfm_segment
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['Champions', 'Loyal', 'Big Spenders', 'New / Promising',
+                       'Needs Attention', 'At Risk', 'Hibernating',
+                       'Lost High Value', 'Lost']
+      - name: lifecycle_stage
+        data_tests:
+          - accepted_values:
+              values: [Active, Cooling, Lost]
+    data_tests:
+      - expression_is_true:
+          expression: recency_score between 1 and 5
+          name: agg_customer_rfm_recency_score_in_range
+      - expression_is_true:
+          expression: rfm_score between 3 and 15
+          name: agg_customer_rfm_total_score_in_range
+
+  - name: agg_cohort_retention
+    description: >
+      Retention triangle by acquisition month. Expect a near-flat curve - this
+      marketplace has a very low repeat rate, which is itself the finding.
+    columns:
+      - name: cohort_month
+        data_tests: [not_null]
+      - name: months_since_acquisition
+        data_tests: [not_null, not_negative]
+      - name: retention_pct
+        data_tests: [not_null]
+    data_tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [cohort_month, months_since_acquisition]
+      - expression_is_true:
+          expression: active_customers <= cohort_size
+          name: agg_cohort_retention_active_within_cohort
+
+  - name: agg_geographic_revenue
+    description: Revenue, freight burden and delivery performance by state and region.
+    columns:
+      - name: state
+        data_tests: [not_null, unique]
+      - name: region
+        data_tests: [not_null]
+      - name: revenue
+        data_tests: [not_null, not_negative]

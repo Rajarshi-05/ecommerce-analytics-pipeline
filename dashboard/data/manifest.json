@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-08-12T11:26:02+00:00",
+  "tables": {
+    "kpi_summary": 1,
+    "revenue_monthly": 26,
+    "category_performance": 26,
+    "seller_performance": 500,
+    "delivery_performance": 179,
+    "delivery_review": 8,
+    "cohort_retention": 278,
+    "geographic_revenue": 27,
+    "segment_profiles": 4,
+    "segment_metrics": 6,
+    "forecast_daily": 863,
+    "forecast_monthly": 29,
+    "forecast_metrics": 2,
+    "sentiment_metrics": 1,
+    "sentiment_terms": 50,
+    "rfm_segments": 8,
+    "sentiment_summary": 26
+  },
+  "skipped": []
+}

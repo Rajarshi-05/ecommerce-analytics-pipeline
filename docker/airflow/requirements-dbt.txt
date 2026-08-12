@@ -1,0 +1,4 @@
+# Isolated venv: dbt only. Kept apart from Airflow's own dependency tree so
+# dbt's pins (protobuf, jinja2, ...) can never break the scheduler.
+dbt-core==1.9.2
+dbt-postgres==1.9.0

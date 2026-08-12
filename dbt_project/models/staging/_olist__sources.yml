@@ -1,0 +1,100 @@
+version: 2
+
+sources:
+  - name: olist_raw
+    description: >
+      Landing zone. A faithful, untransformed copy of the nine Olist CSVs,
+      written by the `ingestion` package. Nothing here is cleaned - every cast,
+      rename and de-duplication happens in staging so the transformation is
+      version-controlled and testable.
+    schema: raw
+    loader: ingestion.load
+
+    tables:
+      - name: customers
+        description: >
+          One row per order-time customer record. `customer_id` is per-order;
+          `customer_unique_id` identifies the person behind the orders.
+        columns:
+          - name: customer_id
+            description: Primary key. Joins to orders.
+            data_tests: [not_null, unique]
+          - name: customer_unique_id
+            description: Stable person-level id. Basis for repeat-purchase and RFM.
+            data_tests: [not_null]
+
+      - name: geolocation
+        description: Lat/lng points per zip prefix. Many rows per prefix - no natural key.
+        columns:
+          - name: geolocation_zip_code_prefix
+            data_tests: [not_null]
+
+      - name: order_items
+        description: Order line items. Grain is one row per item within an order.
+        columns:
+          - name: order_id
+            data_tests: [not_null]
+          - name: order_item_id
+            description: Sequence number within the order, not a global id.
+            data_tests: [not_null]
+          - name: price
+            data_tests: [not_null]
+
+      - name: order_payments
+        description: Payment records. An order can be split across several methods.
+        columns:
+          - name: order_id
+            data_tests: [not_null]
+          - name: payment_value
+            data_tests: [not_null]
+
+      - name: order_reviews
+        description: >
+          Customer reviews. Known source defect - `review_id` is not unique and
+          a small number of orders carry more than one review. Preserved as-is
+          here; resolved in stg_order_reviews.
+        columns:
+          - name: order_id
+            data_tests: [not_null]
+          - name: review_score
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values: [1, 2, 3, 4, 5]
+                  quote: false
+
+      - name: orders
+        description: Order header. The spine of the whole model.
+        columns:
+          - name: order_id
+            data_tests: [not_null, unique]
+          - name: customer_id
+            data_tests:
+              - not_null
+              - relationships:
+                  to: source('olist_raw', 'customers')
+                  field: customer_id
+          - name: order_status
+            data_tests:
+              - accepted_values:
+                  values:
+                    [delivered, shipped, canceled, unavailable, invoiced,
+                     processing, created, approved]
+
+      - name: products
+        description: Product catalogue. Category is null for a small share of rows.
+        columns:
+          - name: product_id
+            data_tests: [not_null, unique]
+
+      - name: sellers
+        description: Marketplace sellers.
+        columns:
+          - name: seller_id
+            data_tests: [not_null, unique]
+
+      - name: product_category_translation
+        description: Portuguese to English category lookup.
+        columns:
+          - name: product_category_name
+            data_tests: [not_null, unique]

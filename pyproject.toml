@@ -1,0 +1,36 @@
+[project]
+name = "ecommerce-analytics-pipeline"
+version = "1.0.0"
+description = "End-to-end e-commerce analytics pipeline: ingestion, dbt star schema, Airflow, ML, dashboard."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers --strict-config"
+markers = [
+    "integration: needs a running Postgres warehouse (deselect with -m 'not integration')",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:pkg_resources",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["dbt_project/target", "dbt_project/dbt_packages", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    "E402",  # dashboard pages must extend sys.path before importing dashboard.lib
+    "B008",  # FastAPI's Depends()/Query() defaults are the documented pattern
+    "C408",  # Plotly's layout API is conventionally called with dict(...)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.coverage.run]
+source = ["ingestion", "ml", "dashboard/lib", "scripts"]
+omit = ["*/__init__.py"]
