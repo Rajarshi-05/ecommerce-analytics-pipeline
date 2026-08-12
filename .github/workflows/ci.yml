@@ -179,9 +179,21 @@ jobs:
                   print(f"::error file={path}::{error}")
               raise SystemExit(1)
 
-          dag = bag.get_dag("ecommerce_analytics_pipeline")
-          assert dag is not None, "ecommerce_analytics_pipeline not found"
+          # bag.dags, not bag.get_dag(): get_dag() falls through to a DagModel
+          # lookup against the metadata database, which does not exist in CI.
+          # Whether the file parses is a purely in-memory question.
+          dag = bag.dags.get("ecommerce_analytics_pipeline")
+          assert dag is not None, f"DAG not found; parsed: {sorted(bag.dags)}"
+
           print(f"OK: {len(dag.tasks)} tasks")
-          for task in dag.tasks:
+          for task in sorted(dag.tasks, key=lambda t: t.task_id):
               print(f"  - {task.task_id}")
+
+          # Guard the properties the pipeline's correctness story rests on.
+          assert dag.schedule_interval == "0 4 * * *", dag.schedule_interval
+          assert dag.max_active_runs == 1, "concurrent runs would race the raw zone"
+          assert dag.default_args["retries"] >= 1, "tasks must be retryable"
+
+          pooled = {t.task_id for t in dag.tasks if t.pool == "ml_pool"}
+          assert len(pooled) == 3, f"expected 3 pooled ML tasks, got {sorted(pooled)}"
           PY
